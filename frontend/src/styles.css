@@ -182,6 +182,36 @@ input {
   min-height: 420px;
 }
 
+.settings-note {
+  margin: 0 0 1rem;
+  color: #9fb3c8;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.settings-field {
+  display: grid;
+  gap: 0.35rem;
+  color: #9fb3c8;
+}
+
+.settings-field.wide {
+  grid-column: 1 / -1;
+}
+
+.logs-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  color: #9fb3c8;
+}
+
 .logs-empty {
   min-height: 360px;
   display: grid;
@@ -189,9 +219,17 @@ input {
   color: #9fb3c8;
 }
 
+.logs-empty.small {
+  min-height: 120px;
+}
+
 .logs-list {
   max-height: 70vh;
   overflow: auto;
+}
+
+.logs-list.compact {
+  max-height: 240px;
 }
 
 .log-entry {
@@ -203,6 +241,10 @@ input {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: Consolas, "Courier New", monospace;
+}
+
+.db-entry {
+  border-left: 3px solid #61dafb;
 }
 
 .status-badge {

@@ -108,12 +108,12 @@ bool initCamera() {
   config.fb_location = CAMERA_FB_IN_PSRAM;
 
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 18;
+    config.frame_size = FRAMESIZE_HD;
+    config.jpeg_quality = 12;
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_QQVGA;
-    config.jpeg_quality = 20;
+    config.frame_size = FRAMESIZE_HD;
+    config.jpeg_quality = 12;
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_DRAM;
   }
