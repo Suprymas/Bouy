@@ -1,4 +1,4 @@
-module github.com/Suprymas/Bouy
+module buoy-hub
 
 go 1.25.0
 
