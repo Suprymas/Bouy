@@ -189,11 +189,56 @@ function buildBuoyState(current, payload, rawText) {
   };
 }
 
+function extractTelemetryDetails(entry) {
+  const payload = parseIncoming(entry.message || "");
+  if (!payload) {
+    return null;
+  }
+
+  const buoyId = payload.buoyId || payload.buoy_id || entry.clientId || "unknown";
+  let latitude = null;
+  let longitude = null;
+
+  if (typeof payload.gps === "string") {
+    [latitude, longitude] = payload.gps.split(",").map((value) => value?.trim() || "");
+  } else if (payload.lat != null || payload.lon != null) {
+    latitude = String(payload.lat ?? "");
+    longitude = String(payload.lon ?? "");
+  }
+
+  const compass = payload.compass ?? "waiting";
+
+  if (!latitude && !longitude && payload.gps == null && payload.lat == null && payload.lon == null && payload.compass == null) {
+    return null;
+  }
+
+  return {
+    buoyId,
+    latitude: latitude || "waiting",
+    longitude: longitude || "waiting",
+    compass: String(compass),
+  };
+}
+
+function formatCompassDisplay(value) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized || normalized === "waiting") {
+    return "waiting";
+  }
+
+  return `${normalized}°`;
+}
+
 function formatLogEntry(entry) {
   const time = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString("en-GB", { hour12: false }) : "";
 
   if (entry.event === "message") {
-    return `[MSG] ${entry.clientId || "unknown"} @ ${time}: ${entry.message || ""}`;
+    const telemetry = extractTelemetryDetails(entry);
+    if (telemetry) {
+      return `Time: ${time || "--:--:--"}; ID: ${telemetry.buoyId}; Lat: ${telemetry.latitude} Lon: ${telemetry.longitude}; Compass: ${formatCompassDisplay(telemetry.compass)}`;
+    }
+
+    return `Time: ${time || "--:--:--"}; ID: ${entry.clientId || "unknown"}; Message: ${entry.message || ""}`;
   }
 
   if (entry.event === "connected") {
@@ -222,18 +267,31 @@ function formatLogEntry(entry) {
 }
 
 function formatBuoySnapshot(buoy) {
-  const parts = [
-    `[DB] ${buoy.buoyId || buoy.id || "unknown"}`,
-    `status=${buoy.status || "unknown"}`,
-    `gps=${String(buoy.gps ?? "waiting")}`,
-    `compass=${String(buoy.compass ?? "waiting")}`,
-  ];
+  const time = typeof buoy.time === "string" && buoy.time.trim() ? buoy.time.trim() : "--:--:--";
+  const status = String(buoy.status || "").toLowerCase() === "online" ? "Online" : "Offline";
+  return `Time: ${time}; ID: ${buoy.buoyId || buoy.id || "unknown"}; Status: ${status}`;
+}
 
-  if (buoy.imageUrl) {
-    parts.push("image=available");
+function renderLogEntry(entry) {
+  const time = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString("en-GB", { hour12: false }) : "--:--:--";
+
+  if (entry.event === "image") {
+    const imageUrl = resolveImageUrl(entry.message || "");
+    return (
+      <>
+        {`Time: ${time}; ID: ${entry.clientId || "unknown"}; `}
+        {imageUrl ? (
+          <a href={imageUrl} target="_blank" rel="noreferrer">
+            Image received
+          </a>
+        ) : (
+          "Image received"
+        )}
+      </>
+    );
   }
 
-  return parts.join(" | ");
+  return formatLogEntry(entry);
 }
 
 export default function App() {
@@ -244,13 +302,6 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [dbBuoys, setDbBuoys] = useState([]);
   const [dbStatus, setDbStatus] = useState("unavailable");
-  const [dbConfig, setDbConfig] = useState(() => ({
-    host: window.localStorage.getItem("db_host") || "",
-    port: window.localStorage.getItem("db_port") || "",
-    user: window.localStorage.getItem("db_user") || "",
-    password: window.localStorage.getItem("db_password") || "",
-    name: window.localStorage.getItem("db_name") || "",
-  }));
   const socketRef = useRef(null);
   const socketHost = createSocketHostLabel();
 
@@ -387,7 +438,7 @@ export default function App() {
       </header>
 
       {menu === "dashboard" && <DashboardView boeys={connectedBoeys} />}
-      {menu === "logs" && <LogsView dbBuoys={dbBuoys} dbConfig={dbConfig} dbStatus={dbStatus} logs={logs} onDbConfigChange={setDbConfig} />}
+      {menu === "logs" && <LogsView dbBuoys={dbBuoys} dbStatus={dbStatus} logs={logs} />}
       {menu === "map" && <MapView boeys={allBoeys} />}
     </main>
   );
@@ -433,53 +484,9 @@ function DashboardView({ boeys }) {
   );
 }
 
-function LogsView({ dbBuoys, dbConfig, dbStatus, logs, onDbConfigChange }) {
-  function updateField(field, value) {
-    onDbConfigChange((current) => {
-      const next = { ...current, [field]: value };
-      window.localStorage.setItem(`db_${field}`, value);
-      return next;
-    });
-  }
-
+function LogsView({ dbBuoys, dbStatus, logs }) {
   return (
     <section className="page">
-      <article className="panel logs-panel">
-        <div className="logs-section-header">
-          <strong>Database Settings</strong>
-          <span>frontend only</span>
-        </div>
-        <p className="settings-note">
-          Temporary frontend-only placeholders. This should be changed in the future to backend/server configuration.
-        </p>
-        <div className="settings-grid">
-          <label className="settings-field">
-            <span>Host</span>
-            <input value={dbConfig.host} onChange={(event) => updateField("host", event.target.value)} />
-          </label>
-          <label className="settings-field">
-            <span>Port</span>
-            <input value={dbConfig.port} onChange={(event) => updateField("port", event.target.value)} />
-          </label>
-          <label className="settings-field">
-            <span>User</span>
-            <input value={dbConfig.user} onChange={(event) => updateField("user", event.target.value)} />
-          </label>
-          <label className="settings-field">
-            <span>Password</span>
-            <input
-              type="password"
-              value={dbConfig.password}
-              onChange={(event) => updateField("password", event.target.value)}
-            />
-          </label>
-          <label className="settings-field wide">
-            <span>Database</span>
-            <input value={dbConfig.name} onChange={(event) => updateField("name", event.target.value)} />
-          </label>
-        </div>
-      </article>
-
       <article className="panel logs-panel">
         <div className="logs-section-header">
           <strong>Database Snapshot</strong>
@@ -509,7 +516,7 @@ function LogsView({ dbBuoys, dbConfig, dbStatus, logs, onDbConfigChange }) {
           <div className="logs-list">
             {logs.map((entry) => (
               <pre key={entry.id} className="log-entry">
-                {formatLogEntry(entry)}
+                {renderLogEntry(entry)}
               </pre>
             ))}
           </div>
