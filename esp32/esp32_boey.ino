@@ -1,8 +1,11 @@
 #include <WiFi.h>
 #include <WebSocketsClient.h>
 #include "esp_camera.h"
+#include <TinyGPSPlus.h>
+#include <Wire.h>
+#include <QMC5883LCompass.h>
 
-// XIAO ESP32S3 Sense camera pin map based on Seeed examples for CAMERA_MODEL_XIAO_ESP32S3.
+// CAMERA PINS (XIAO ESP32S3 Sense)
 #define PWDN_GPIO_NUM   -1
 #define RESET_GPIO_NUM  -1
 #define XCLK_GPIO_NUM   10
@@ -21,9 +24,11 @@
 #define HREF_GPIO_NUM   47
 #define PCLK_GPIO_NUM   13
 
+// WIFI
 static const char* WIFI_SSID = "YOUR_WIFI_SSID";
 static const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
+// SERVER
 static const char* WS_HOST = "10.89.149.15";
 static const uint16_t WS_PORT = 8080;
 static const char* WS_PATH = "/ws";
@@ -33,7 +38,15 @@ static const char* BUOY_ID = "boey-01";
 static const unsigned long IMAGE_INTERVAL_MS = 1000;
 static const unsigned long TELEMETRY_INTERVAL_MS = 1000;
 
+// WEBSOCKET
 WebSocketsClient webSocket;
+
+// GPS + COMPASS
+TinyGPSPlus gps;
+HardwareSerial GPSserial(1);
+QMC5883LCompass compass;
+
+// TIMERS
 unsigned long lastImageAt = 0;
 unsigned long lastTelemetryAt = 0;
 
@@ -44,32 +57,45 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length);
 void sendFrame();
 void sendTelemetry();
 String buildTelemetryJson();
-String fakeGps();
-String fakeCompass();
+String getGps();
+String getCompass();
 
 void setup() {
+
   Serial.begin(115200);
   delay(1000);
 
+  // CAMERA
   if (!initCamera()) {
     Serial.println("Camera initialization failed");
-    while (true) {
-      delay(1000);
-    }
+    while (true) delay(1000);
   }
+
+  // GPS UART
+  GPSserial.begin(9600, SERIAL_8N1, 7, 6);
+
+  // I2C COMPASS
+  Wire.begin(4,5);
+  compass.init();
 
   connectWifi();
   connectWebSocket();
 }
 
 void loop() {
+
   webSocket.loop();
+
+  // CONTINUOUS GPS PARSING
+  while (GPSserial.available()) {
+    gps.encode(GPSserial.read());
+  }
 
   if (WiFi.status() != WL_CONNECTED) {
     connectWifi();
   }
 
-  const unsigned long now = millis();
+  unsigned long now = millis();
 
   if (webSocket.isConnected() && now - lastTelemetryAt >= TELEMETRY_INTERVAL_MS) {
     lastTelemetryAt = now;
@@ -83,9 +109,12 @@ void loop() {
 }
 
 bool initCamera() {
+
   camera_config_t config;
+
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
+
   config.pin_d0 = Y2_GPIO_NUM;
   config.pin_d1 = Y3_GPIO_NUM;
   config.pin_d2 = Y4_GPIO_NUM;
@@ -94,16 +123,21 @@ bool initCamera() {
   config.pin_d5 = Y7_GPIO_NUM;
   config.pin_d6 = Y8_GPIO_NUM;
   config.pin_d7 = Y9_GPIO_NUM;
+
   config.pin_xclk = XCLK_GPIO_NUM;
   config.pin_pclk = PCLK_GPIO_NUM;
   config.pin_vsync = VSYNC_GPIO_NUM;
   config.pin_href = HREF_GPIO_NUM;
+
   config.pin_sccb_sda = SIOD_GPIO_NUM;
   config.pin_sccb_scl = SIOC_GPIO_NUM;
+
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
+
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
+
   config.grab_mode = CAMERA_GRAB_LATEST;
   config.fb_location = CAMERA_FB_IN_PSRAM;
 
@@ -119,27 +153,29 @@ bool initCamera() {
   }
 
   esp_err_t err = esp_camera_init(&config);
+
   if (err != ESP_OK) {
-    Serial.printf("esp_camera_init failed: 0x%x\n", err);
+    Serial.printf("Camera failed: 0x%x\n", err);
     return false;
   }
 
   sensor_t* sensor = esp_camera_sensor_get();
-  if (sensor != nullptr) {
-    sensor->set_brightness(sensor, 0);
-    sensor->set_saturation(sensor, 0);
-    sensor->set_contrast(sensor, 0);
+
+  if (sensor) {
+    sensor->set_brightness(sensor,0);
+    sensor->set_saturation(sensor,0);
+    sensor->set_contrast(sensor,0);
   }
 
   return true;
 }
 
 void connectWifi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    return;
-  }
 
-  Serial.printf("Connecting to Wi-Fi SSID: %s\n", WIFI_SSID);
+  if (WiFi.status() == WL_CONNECTED) return;
+
+  Serial.printf("Connecting to WiFi: %s\n", WIFI_SSID);
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -149,73 +185,109 @@ void connectWifi() {
   }
 
   Serial.println();
-  Serial.print("Wi-Fi connected, IP: ");
+  Serial.print("Connected. IP: ");
   Serial.println(WiFi.localIP());
 }
 
 void connectWebSocket() {
+
   webSocket.begin(WS_HOST, WS_PORT, WS_PATH);
+
   webSocket.setReconnectInterval(3000);
+
   webSocket.enableHeartbeat(15000, 3000, 2);
+
   webSocket.onEvent(onWebSocketEvent);
 }
 
 void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
+
   switch (type) {
+
     case WStype_CONNECTED:
-      Serial.printf("WebSocket connected to ws://%s:%u%s\n", WS_HOST, WS_PORT, WS_PATH);
+      Serial.printf("WebSocket connected\n");
       break;
+
     case WStype_DISCONNECTED:
       Serial.println("WebSocket disconnected");
       break;
+
     case WStype_TEXT:
-      Serial.printf("Server text: %.*s\n", static_cast<int>(length), payload);
+      Serial.printf("Server: %.*s\n", length, payload);
       break;
+
     case WStype_ERROR:
       Serial.println("WebSocket error");
       break;
+
     default:
       break;
   }
 }
 
 void sendFrame() {
+
   camera_fb_t* frame = esp_camera_fb_get();
-  if (frame == nullptr) {
-    Serial.println("Failed to capture frame");
+
+  if (!frame) {
+    Serial.println("Frame failed");
     return;
   }
 
   bool ok = webSocket.sendBIN(frame->buf, frame->len);
+
   esp_camera_fb_return(frame);
 
-  Serial.printf("Binary frame sent: %s, bytes=%u\n", ok ? "ok" : "failed", frame->len);
+  Serial.printf("Frame sent %s (%u bytes)\n", ok ? "ok" : "fail", frame->len);
 }
 
 void sendTelemetry() {
+
   String payload = buildTelemetryJson();
+
   webSocket.sendTXT(payload);
+
+  Serial.println(payload);
 }
 
 String buildTelemetryJson() {
+
   String json;
+
   json.reserve(160);
+
   json += "{\"buoyId\":\"";
   json += BUOY_ID;
   json += "\",\"status\":\"online\",\"gps\":\"";
-  json += fakeGps();
+  json += getGps();
   json += "\",\"compass\":\"";
-  json += fakeCompass();
+  json += getCompass();
   json += "\"}";
+
   return json;
 }
 
-String fakeGps() {
-  // Replace this with real GPS sensor input when available.
-  return "54.6872,25.2797";
+String getGps() {
+
+  if (gps.location.isValid()) {
+
+    String s;
+
+    s += String(gps.location.lat(),6);
+    s += ",";
+    s += String(gps.location.lng(),6);
+
+    return s;
+  }
+
+  return "0,0";
 }
 
-String fakeCompass() {
-  // Replace this with a real compass sensor reading when available.
-  return "182";
+String getCompass() {
+
+  compass.read();
+
+  int azimuth = compass.getAzimuth();
+
+  return String(azimuth);
 }
