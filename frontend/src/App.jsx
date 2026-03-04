@@ -18,6 +18,16 @@ function parseIncoming(raw) {
   }
 }
 
+function pickNewerImageUrl(currentUrl, nextUrl) {
+  if (!currentUrl) {
+    return nextUrl || "";
+  }
+  if (!nextUrl) {
+    return currentUrl;
+  }
+  return nextUrl > currentUrl ? nextUrl : currentUrl;
+}
+
 function buildBuoyState(current, payload, rawText) {
   const buoyId = payload.buoyId || payload.id || "unknown-boey";
   const existing = current[buoyId] || {
@@ -31,9 +41,10 @@ function buildBuoyState(current, payload, rawText) {
   const telemetry = payload.telemetry && typeof payload.telemetry === "object" ? payload.telemetry : {};
   const nextGps = payload.gps || telemetry.gps || existing.gps;
   const nextCompass = payload.compass || telemetry.compass || existing.compass;
-  const nextImageUrl = payload.imageBase64
+  const incomingImageUrl = payload.imageBase64
     ? `data:image/jpeg;base64,${payload.imageBase64}`
     : payload.imageUrl || existing.imageUrl;
+  const nextImageUrl = pickNewerImageUrl(existing.imageUrl, incomingImageUrl);
 
   return {
     ...current,
@@ -45,6 +56,32 @@ function buildBuoyState(current, payload, rawText) {
       status: payload.status || payload.message || rawText || existing.status,
     },
   };
+}
+
+function mergeBuoyList(current, buoys) {
+  const next = { ...current };
+
+  for (const buoy of buoys) {
+    const buoyId = buoy.buoyId || buoy.id || "unknown-boey";
+    const existing = next[buoyId] || {
+      id: buoyId,
+      imageUrl: "",
+      status: "online",
+      gps: "waiting",
+      compass: "waiting",
+    };
+
+    next[buoyId] = {
+      ...existing,
+      id: buoyId,
+      imageUrl: pickNewerImageUrl(existing.imageUrl, buoy.imageUrl),
+      gps: buoy.gps || existing.gps,
+      compass: buoy.compass || existing.compass,
+      status: buoy.status || existing.status,
+    };
+  }
+
+  return next;
 }
 
 function formatLogEntry(entry) {
@@ -117,6 +154,30 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
+    function loadBuoys() {
+      fetch("/api/buoys")
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`buoys request failed: ${response.status}`);
+          }
+          return response.json();
+        })
+        .then((data) => {
+          if (!cancelled) {
+            const nextBuoys = Array.isArray(data.buoys) ? data.buoys : [];
+            setDbBuoys(nextBuoys);
+            setBoeys((current) => mergeBuoyList(current, nextBuoys));
+            setDbStatus("loaded");
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setDbBuoys([]);
+            setDbStatus("unavailable");
+          }
+        });
+    }
+
     fetch("/health")
       .then((response) => {
         if (!response.ok) {
@@ -154,25 +215,8 @@ export default function App() {
         }
       });
 
-    fetch("/api/buoys")
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`buoys request failed: ${response.status}`);
-        }
-        return response.json();
-      })
-      .then((data) => {
-        if (!cancelled) {
-          setDbBuoys(Array.isArray(data.buoys) ? data.buoys : []);
-          setDbStatus("loaded");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDbBuoys([]);
-          setDbStatus("unavailable");
-        }
-      });
+    loadBuoys();
+    const buoyPoll = window.setInterval(loadBuoys, 1000);
 
     const socket = new WebSocket(createSocketUrl());
     socketRef.current = socket;
@@ -206,6 +250,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      window.clearInterval(buoyPoll);
       socket.close();
     };
   }, []);

@@ -7,6 +7,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/health": "http://localhost:8080",
+      "/logs": "http://localhost:8080",
+      "/api": "http://localhost:8080",
+      "/media": "http://localhost:8080",
       "/ws": {
         target: "ws://localhost:8080",
         ws: true,

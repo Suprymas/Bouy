@@ -5,6 +5,7 @@ import (
 	"buoy-hub/internal/db"
 	"buoy-hub/internal/storage"
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
@@ -14,6 +15,10 @@ type Server struct {
 	clients map[string]*client.Client
 	db      *db.DB
 	storage *storage.Storage
+	latest  map[string]buoyState
+	links   map[string]string
+	logs    []LogEntry
+	mu      sync.RWMutex
 }
 
 func New(database *db.DB, store *storage.Storage) *Server {
@@ -21,6 +26,8 @@ func New(database *db.DB, store *storage.Storage) *Server {
 		clients: make(map[string]*client.Client),
 		db:      database,
 		storage: store,
+		latest:  make(map[string]buoyState),
+		links:   make(map[string]string),
 	}
 }
 
