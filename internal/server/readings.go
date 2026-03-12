@@ -13,6 +13,7 @@ type buoySnapshot struct {
 	BuoyID   string `json:"buoyId"`
 	Status   string `json:"status"`
 	GPS      string `json:"gps"`
+	Sats     string `json:"sats,omitempty"`
 	Compass  string `json:"compass"`
 	ImageURL string `json:"imageUrl,omitempty"`
 }
@@ -50,6 +51,7 @@ func (s *Server) BuoysHandler(w http.ResponseWriter, r *http.Request) {
 				BuoyID:   reading.BuoyID,
 				Status:   status,
 				GPS:      fmt.Sprintf("%f,%f", reading.Latitude, reading.Longitude),
+				Sats:     "waiting",
 				Compass:  "waiting",
 				ImageURL: imageURL,
 			})

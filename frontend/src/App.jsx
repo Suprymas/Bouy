@@ -101,6 +101,21 @@ function parseGpsData(value) {
   };
 }
 
+function readTelemetryValue(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function parseSatelliteValue(value) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function parseDirectionDegrees(value) {
   const degrees = Number.parseFloat(String(value ?? "").trim());
   if (!Number.isFinite(degrees)) {
@@ -190,12 +205,14 @@ function buildBuoyState(current, payload, rawText) {
     imageUrl: "",
     status: "online",
     gps: "waiting",
+    sats: "waiting",
     compass: "waiting",
   };
 
   const telemetry = payload.telemetry && typeof payload.telemetry === "object" ? payload.telemetry : {};
-  const nextGps = payload.gps || telemetry.gps || existing.gps;
-  const nextCompass = payload.compass || telemetry.compass || existing.compass;
+  const nextGps = readTelemetryValue(payload.gps, telemetry.gps, existing.gps) ?? "waiting";
+  const nextSats = readTelemetryValue(payload.sats, telemetry.sats, existing.sats) ?? "waiting";
+  const nextCompass = readTelemetryValue(payload.compass, telemetry.compass, existing.compass) ?? "waiting";
   const nextImageUrl = payload.imageBase64
     ? `data:image/jpeg;base64,${payload.imageBase64}`
     : resolveImageUrl(payload.imageUrl) || existing.imageUrl;
@@ -206,6 +223,7 @@ function buildBuoyState(current, payload, rawText) {
       ...existing,
       imageUrl: nextImageUrl,
       gps: nextGps,
+      sats: nextSats,
       compass: nextCompass,
       status: payload.status || payload.message || rawText || existing.status,
     },
@@ -216,14 +234,16 @@ function extractTelemetryDetails(entry) {
   const payload = parseIncoming(entry.message || "");
   if (payload) {
     const buoyId = payload.buoyId || payload.buoy_id || entry.clientId || "unknown";
-    let satellites = null;
+    let satellites = parseSatelliteValue(readTelemetryValue(payload.sats, payload.telemetry?.sats));
     let latitude = null;
     let longitude = null;
 
     if (typeof payload.gps === "string") {
       const parsedGps = parseGpsData(payload.gps);
       if (parsedGps) {
-        satellites = parsedGps.satellites;
+        if (satellites == null) {
+          satellites = parsedGps.satellites;
+        }
         latitude = String(parsedGps.latitude);
         longitude = String(parsedGps.longitude);
       }
@@ -234,7 +254,7 @@ function extractTelemetryDetails(entry) {
 
     const compass = payload.compass ?? "waiting";
 
-    if (!latitude && !longitude && payload.gps == null && payload.lat == null && payload.lon == null && payload.compass == null) {
+    if (!latitude && !longitude && satellites == null && payload.gps == null && payload.lat == null && payload.lon == null && payload.compass == null) {
       return null;
     }
 
@@ -533,7 +553,7 @@ function DashboardView({ boeys }) {
               <div className="mini-status">
                 <div className="mini-field">
                   <span>Sat</span>
-                  <strong>{parseGpsData(boey.gps)?.satellites ?? "waiting"}</strong>
+                  <strong>{parseSatelliteValue(boey.sats) ?? parseGpsData(boey.gps)?.satellites ?? "waiting"}</strong>
                 </div>
                 <div className="mini-field">
                   <span>GPS</span>
@@ -541,7 +561,7 @@ function DashboardView({ boeys }) {
                 </div>
                 <div className="mini-field">
                   <span>Compass</span>
-                  <strong>{String(boey.compass)}</strong>
+                  <strong>{formatCompassDisplay(boey.compass)}</strong>
                 </div>
               </div>
             </article>

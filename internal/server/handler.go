@@ -27,6 +27,7 @@ type telemetryMessage struct {
 	BuoyID   string `json:"buoyId"`
 	Status   string `json:"status"`
 	GPS      string `json:"gps"`
+	Sats     string `json:"sats,omitempty"`
 	Compass  string `json:"compass"`
 	ImageURL string `json:"imageUrl,omitempty"`
 }
@@ -89,7 +90,11 @@ func (s *Server) handleTelemetry(c *client.Client, message []byte) {
 		return
 	}
 
-	sats, hasSats := parseSatelliteCount(payload.GPS)
+	satSource := payload.Sats
+	if satSource == "" {
+		satSource = payload.GPS
+	}
+	sats, hasSats := parseSatelliteCount(satSource)
 	if hasSats {
 		log.Printf("[MSG] %s @ %s sats=%d gps=%s", c.ID, time.Now().Format("15:04:05"), sats, payload.GPS)
 		s.addLog("info", "message", c.ID, fmt.Sprintf("sats=%d gps=%s", sats, payload.GPS))
@@ -229,7 +234,7 @@ func clientRole(r *http.Request) string {
 
 func parseTelemetryPayload(clientID string, message []byte) (telemetryMessage, buoyState, db.Reading, bool) {
 	var live telemetryMessage
-	if err := json.Unmarshal(message, &live); err == nil && (live.BuoyID != "" || live.GPS != "" || live.Compass != "" || live.Status != "") {
+	if err := json.Unmarshal(message, &live); err == nil && (live.BuoyID != "" || live.GPS != "" || live.Sats != "" || live.Compass != "" || live.Status != "") {
 		if live.BuoyID == "" {
 			live.BuoyID = clientID
 		}
@@ -244,6 +249,7 @@ func parseTelemetryPayload(clientID string, message []byte) (telemetryMessage, b
 				BuoyID:   live.BuoyID,
 				Status:   live.Status,
 				GPS:      defaultString(live.GPS, "waiting"),
+				Sats:     defaultString(live.Sats, "waiting"),
 				Compass:  defaultString(live.Compass, "waiting"),
 				ImageURL: live.ImageURL,
 			},
@@ -274,6 +280,7 @@ func parseTelemetryPayload(clientID string, message []byte) (telemetryMessage, b
 			BuoyID:  buoyID,
 			Status:  "online",
 			GPS:     gps,
+			Sats:    "waiting",
 			Compass: "waiting",
 		}
 
@@ -283,6 +290,7 @@ func parseTelemetryPayload(clientID string, message []byte) (telemetryMessage, b
 				BuoyID:  buoyID,
 				Status:  "online",
 				GPS:     gps,
+				Sats:    "waiting",
 				Compass: "waiting",
 			},
 			Latitude:  legacy.Latitude,

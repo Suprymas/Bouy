@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const backendBaseUrl = env.VITE_BACKEND_BASE_URL || "http://10.89.149.15:8080";
+  const backendBaseUrl = env.VITE_BACKEND_BASE_URL || "http://192.168.148.15:8080";
   const wsBaseUrl = env.VITE_WS_BASE_URL || backendBaseUrl.replace(/^http/, "ws");
 
   return {

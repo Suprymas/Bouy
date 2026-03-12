@@ -1,28 +1,9 @@
 #include <WiFi.h>
 #include <WebSocketsClient.h>
 #include "esp_camera.h"
-#include <NMEAGPS.h>
 #include <Wire.h>
-#include <QMC5883LCompass.h>
 
-// ---------------- GPS ----------------
-
-NMEAGPS gps;
-gps_fix fix;
-
-static const int GPS_RX = 44;
-static const int GPS_TX = 43;
-
-float gpsLat = 0;
-float gpsLon = 0;
-int gpsSats = 0;
-
-// ---------------- COMPASS ----------------
-
-QMC5883LCompass compass;
-int compassHeading = 0;
-
-// ---------------- CAMERA ----------------
+/* ================= CAMERA PINS ================= */
 
 #define PWDN_GPIO_NUM   -1
 #define RESET_GPIO_NUM  -1
@@ -42,30 +23,55 @@ int compassHeading = 0;
 #define HREF_GPIO_NUM   47
 #define PCLK_GPIO_NUM   13
 
-// ---------------- NETWORK ----------------
+/* ================= COMPASS ================= */
+
+#define COMPASS_ADDR 0x1E
+#define SDA_PIN 5
+#define SCL_PIN 6
+
+/* ================= GPS ================= */
+
+#define GPS_RX 43
+#define GPS_TX 44
+
+HardwareSerial GPS(1);
+
+/* ================= WIFI ================= */
 
 static const char* WIFI_SSID = "NojusS24";
 static const char* WIFI_PASSWORD = "slaptaszodis";
 
-static const char* WS_HOST = "10.89.149.15";
+/* ================= WEBSOCKET ================= */
+
+static const char* WS_HOST = "192.168.148.15";
 static const uint16_t WS_PORT = 8080;
 static const char* WS_PATH = "/ws";
 
-static const char* BUOY_ID = "boey-01";
+/* ================= DEVICE ================= */
 
-// ---------------- TIMING ----------------
+static const char* BUOY_ID = "buoy-01";
 
-static const unsigned long IMAGE_INTERVAL_MS = 1000;
+/* ================= TIMING ================= */
+
+static const unsigned long IMAGE_INTERVAL_MS = 2000;
 static const unsigned long TELEMETRY_INTERVAL_MS = 1000;
+static const unsigned long WS_CONNECT_INTERVAL_MS = 5000;
 
-// ---------------- GLOBALS ----------------
+/* ================= GLOBALS ================= */
 
 WebSocketsClient webSocket;
 
 unsigned long lastImageAt = 0;
 unsigned long lastTelemetryAt = 0;
+unsigned long lastWebSocketConnectAttemptAt = 0;
 
-// ---------------- FUNCTIONS ----------------
+/* GPS DATA */
+
+float gpsLat = 0;
+float gpsLon = 0;
+String gpsSats = "0";
+
+/* ================= FUNCTIONS ================= */
 
 bool initCamera();
 void connectWifi();
@@ -76,11 +82,13 @@ void sendFrame();
 void sendTelemetry();
 
 String buildTelemetryJson();
+String readCompass();
 
-String buildGps();
-String buildCompass();
+void readGPS();
+void parseGPS(String line);
+float nmeaToDecimal(String raw, String dir);
 
-// ---------------- SETUP ----------------
+/* ================= SETUP ================= */
 
 void setup() {
 
@@ -89,69 +97,65 @@ void setup() {
 
   Serial.println("System starting");
 
-  // GPS UART
-  Serial1.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
-  Serial.println("GPS started");
+  Serial.print("PSRAM: ");
+  Serial.println(psramFound());
 
-  // Compass I2C
-  Wire.begin(5,6);
-  compass.init();
+  /* I2C Compass */
+
+  Wire.begin(SDA_PIN, SCL_PIN);
   Serial.println("Compass started");
+
+  /* GPS UART */
+
+  GPS.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+  Serial.println("GPS started");
 
   if (!initCamera()) {
     Serial.println("Camera init failed");
-    while(true) delay(1000);
+    while (true) delay(1000);
   }
 
   connectWifi();
   connectWebSocket();
 }
 
-// ---------------- LOOP ----------------
+/* ================= LOOP ================= */
 
 void loop() {
 
-  // ---- GPS ----
-  while (gps.available(Serial1)) {
-
-    fix = gps.read();
-
-    if (fix.valid.location) {
-      gpsLat = fix.latitude();
-      gpsLon = fix.longitude();
-    }
-
-    gpsSats = fix.satellites;
-  }
-
-  // ---- COMPASS ----
-  compass.read();
-  compassHeading = compass.getAzimuth();
-
   webSocket.loop();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWifi();
-  }
+  readGPS();
 
   unsigned long now = millis();
 
-  if (webSocket.isConnected() && now - lastTelemetryAt >= TELEMETRY_INTERVAL_MS) {
+  if (WiFi.status() != WL_CONNECTED)
+    connectWifi();
+
+  if (!webSocket.isConnected() &&
+      WiFi.status() == WL_CONNECTED &&
+      now - lastWebSocketConnectAttemptAt >= WS_CONNECT_INTERVAL_MS)
+      connectWebSocket();
+
+  if (webSocket.isConnected() &&
+      now - lastTelemetryAt >= TELEMETRY_INTERVAL_MS) {
+
     lastTelemetryAt = now;
     sendTelemetry();
   }
 
-  if (webSocket.isConnected() && now - lastImageAt >= IMAGE_INTERVAL_MS) {
+  if (webSocket.isConnected() &&
+      now - lastImageAt >= IMAGE_INTERVAL_MS) {
+
     lastImageAt = now;
     sendFrame();
   }
 }
 
-// ---------------- CAMERA ----------------
+/* ================= CAMERA ================= */
 
 bool initCamera() {
 
-  camera_config_t config;
+  camera_config_t config = {};
 
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -177,144 +181,231 @@ bool initCamera() {
   config.pin_reset = RESET_GPIO_NUM;
 
   config.xclk_freq_hz = 20000000;
-
   config.pixel_format = PIXFORMAT_JPEG;
 
   config.grab_mode = CAMERA_GRAB_LATEST;
   config.fb_location = CAMERA_FB_IN_PSRAM;
 
-  if (psramFound()) {
-    config.frame_size = FRAMESIZE_HD;
-    config.jpeg_quality = 12;
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_HD;
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
-    config.fb_location = CAMERA_FB_IN_DRAM;
-  }
+  config.frame_size = FRAMESIZE_VGA;
+  config.jpeg_quality = 12;
+  config.fb_count = 1;
 
   esp_err_t err = esp_camera_init(&config);
 
   if (err != ESP_OK) {
-    Serial.printf("Camera error: 0x%x\n", err);
+    Serial.printf("Camera init error: 0x%x\n", err);
     return false;
   }
 
+  Serial.println("Camera started");
   return true;
 }
 
-// ---------------- WIFI ----------------
+/* ================= WIFI ================= */
 
 void connectWifi() {
 
   if (WiFi.status() == WL_CONNECTED) return;
 
-  Serial.printf("Connecting WiFi %s\n", WIFI_SSID);
+  Serial.printf("Connecting to WiFi: %s\n", WIFI_SSID);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  while (WiFi.status() != WL_CONNECTED) {
+  unsigned long start = millis();
+
+  while (WiFi.status() != WL_CONNECTED &&
+         millis() - start < 10000) {
+
     delay(500);
     Serial.print(".");
   }
 
   Serial.println();
-  Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    Serial.print("WiFi connected. IP: ");
+    Serial.println(WiFi.localIP());
+  }
 }
 
-// ---------------- WEBSOCKET ----------------
+/* ================= WEBSOCKET ================= */
 
 void connectWebSocket() {
 
+  lastWebSocketConnectAttemptAt = millis();
+
+  Serial.printf("Connecting WS: ws://%s:%u%s\n",
+                WS_HOST, WS_PORT, WS_PATH);
+
   webSocket.begin(WS_HOST, WS_PORT, WS_PATH);
-
-  webSocket.setReconnectInterval(3000);
-  webSocket.enableHeartbeat(15000,3000,2);
-
   webSocket.onEvent(onWebSocketEvent);
+  webSocket.setReconnectInterval(3000);
 }
 
-void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
+/* ================= WEBSOCKET EVENTS ================= */
 
-  switch(type) {
+void onWebSocketEvent(WStype_t type,
+                      uint8_t* payload,
+                      size_t length) {
 
-    case WStype_CONNECTED:
-      Serial.println("WebSocket connected");
-      break;
+  if (type == WStype_CONNECTED)
+    Serial.println("WebSocket connected");
 
-    case WStype_DISCONNECTED:
-      Serial.println("WebSocket disconnected");
-      break;
-
-    case WStype_TEXT:
-      Serial.printf("Server: %.*s\n", length, payload);
-      break;
-
-    default:
-      break;
-  }
+  if (type == WStype_DISCONNECTED)
+    Serial.println("WebSocket disconnected");
 }
 
-// ---------------- SEND IMAGE ----------------
+/* ================= CAMERA FRAME ================= */
 
 void sendFrame() {
 
-  camera_fb_t *fb = esp_camera_fb_get();
+  camera_fb_t* frame = esp_camera_fb_get();
 
-  if (!fb) {
-    Serial.println("Frame failed");
+  if (!frame) {
+    Serial.println("Camera capture failed");
     return;
   }
 
-  webSocket.sendBIN(fb->buf, fb->len);
-  esp_camera_fb_return(fb);
+  webSocket.sendBIN(frame->buf, frame->len);
+
+  esp_camera_fb_return(frame);
 }
 
-// ---------------- SEND TELEMETRY ----------------
+/* ================= TELEMETRY ================= */
 
 void sendTelemetry() {
 
   String payload = buildTelemetryJson();
 
   webSocket.sendTXT(payload);
+
+  Serial.println(payload);
 }
+
+/* ================= TELEMETRY JSON ================= */
 
 String buildTelemetryJson() {
 
   String json;
 
-  json += "{\"buoyId\":\"";
+  json += "{\"type\":\"telemetry\",\"buoyId\":\"";
   json += BUOY_ID;
-  json += "\",\"status\":\"online\",\"gps\":\"";
-  json += buildGps();
+  json += "\",\"gps\":\"";
+  json += String(gpsLat,6);
+  json += ",";
+  json += String(gpsLon,6);
+  json += "\",\"sats\":\"";
+  json += gpsSats;
   json += "\",\"compass\":\"";
-  json += buildCompass();
+  json += readCompass();
   json += "\"}";
 
   return json;
 }
 
-// ---------------- GPS STRING ----------------
+/* ================= COMPASS ================= */
 
-String buildGps() {
+String readCompass() {
 
-  String gps;
+  int16_t x,y,z;
 
-  gps += String(gpsSats);
-  gps += ",";
-  gps += String(gpsLat,6);
-  gps += ",";
-  gps += String(gpsLon,6);
+  Wire.beginTransmission(COMPASS_ADDR);
+  Wire.write(0x03);
+  Wire.endTransmission();
 
-  return gps;
+  Wire.requestFrom(COMPASS_ADDR,6);
+
+  if (Wire.available()==6) {
+
+    x = Wire.read()<<8 | Wire.read();
+    z = Wire.read()<<8 | Wire.read();
+    y = Wire.read()<<8 | Wire.read();
+
+    float heading = atan2((float)y,(float)x)*180/PI;
+
+    if (heading < 0)
+      heading += 360;
+
+    return String(heading,1);
+  }
+
+  return "0";
 }
 
-// ---------------- COMPASS STRING ----------------
+/* ================= GPS ================= */
 
-String buildCompass() {
+void readGPS() {
 
-  return String(compassHeading);
+  static String line="";
+
+  while (GPS.available()) {
+
+    char c = GPS.read();
+
+    if (c == '\n') {
+
+      parseGPS(line);
+      line="";
+    }
+    else
+      line += c;
+  }
+}
+
+void parseGPS(String line) {
+
+  if (!line.startsWith("$GPGGA"))
+    return;
+
+  int field=0;
+  int last=0;
+  String values[15];
+
+  for(int i=0;i<line.length();i++){
+
+    if(line[i]==','){
+
+      values[field++]=line.substring(last,i);
+      last=i+1;
+    }
+  }
+
+  values[field]=line.substring(last);
+
+  String rawLat=values[2];
+  String latDir=values[3];
+
+  String rawLon=values[4];
+  String lonDir=values[5];
+
+  if(rawLat.length()>0 && rawLon.length()>0){
+
+    gpsLat=nmeaToDecimal(rawLat,latDir);
+    gpsLon=nmeaToDecimal(rawLon,lonDir);
+  }
+
+  if(values[7].length()>0)
+    gpsSats=values[7];
+}
+
+/* ================= GPS CONVERSION ================= */
+
+float nmeaToDecimal(String raw,String dir){
+
+  if(raw.length()<6)
+    return 0;
+
+  float val=raw.toFloat();
+
+  int degrees=int(val/100);
+  float minutes=val-(degrees*100);
+
+  float decimal=degrees+minutes/60.0;
+
+  if(dir=="S"||dir=="W")
+    decimal*=-1;
+
+  return decimal;
 }
