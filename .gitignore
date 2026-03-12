@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+*.pt
 
 # Test binary, built with `go test -c`
 *.test
@@ -13,6 +14,7 @@
 
 # Dependency directory
 vendor/
+pytorch/.venv/
 
 # Go workspace file
 go.work
